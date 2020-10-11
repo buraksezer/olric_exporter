@@ -19,6 +19,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/buraksezer/olric/client"
+	"github.com/buraksezer/olric/serializer"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,16 +32,52 @@ import (
 )
 
 type Exporter struct {
+	address string
+	timeout time.Duration
+	logger  log.Logger
+
+	up *prometheus.Desc
 }
 
 // NewExporter returns an initialized exporter.
 func NewExporter(server string, timeout time.Duration, logger log.Logger) *Exporter {
-	return nil
+	return &Exporter{
+		address: server,
+		timeout: timeout,
+		logger:  logger,
+		up: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "up"),
+			"Could the Olric server be reached.",
+			nil,
+			nil,
+		),
+	}
 }
 
-// Collect fetches the statistics from the configured olric server, and
+// Collect fetches the statistics from the configured Olric server, and
 // delivers them as Prometheus metrics. It implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
+	cc := &client.Config{
+		Addrs:       []string{e.address},
+		MaxConn:     10,
+		Serializer:  serializer.NewMsgpackSerializer(),
+		DialTimeout: e.timeout,
+	}
+	c, err := client.New(cc)
+	if err != nil {
+		ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, 0)
+		level.Error(e.logger).Log("msg", "Failed to connect to Olric", "err", err)
+		return
+	}
+
+	up := float64(1)
+	_, err = c.Stats(e.address)
+	if err != nil {
+		level.Error(e.logger).Log("msg", "Failed to collect stats from memcached", "err", err)
+		up = 0
+	}
+
+	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, up)
 }
 
 // Describe describes all the metrics exported by the olric exporter. It
